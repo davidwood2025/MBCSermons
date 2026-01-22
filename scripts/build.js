@@ -22,58 +22,44 @@ function videosUrl(ids) {
 
 async function build() {
   const searchRes = await fetch(SEARCH_URL);
-  if (!searchRes.ok) {
-    throw new Error(`YouTube search API failed: ${searchRes.status}`);
-  }
+  if (!searchRes.ok) throw new Error(`YouTube search API failed: ${searchRes.status}`);
 
   const searchData = await searchRes.json();
 
-  // Extract candidate video IDs (search sometimes returns items without videoId)
   const candidates = (searchData.items || [])
     .filter(v => v.id && v.id.videoId)
     .map(v => ({
       videoId: v.id.videoId,
       title: v.snippet?.title || "Video",
+      // Prefer high for nicer crops; fallback to medium
       thumb:
-        v.snippet?.thumbnails?.medium?.url ||
         v.snippet?.thumbnails?.high?.url ||
+        v.snippet?.thumbnails?.medium?.url ||
         "",
     }));
 
   if (candidates.length === 0) {
-    // Still generate a page, but with a friendly message
     writeHtml(renderPage([]));
     return;
   }
 
-  // Fetch durations for filtering Shorts (<= 60 seconds)
+  // Fetch durations for Shorts filtering (<= 60 seconds)
   const ids = candidates.map(v => v.videoId);
   const vidsRes = await fetch(videosUrl(ids));
-  if (!vidsRes.ok) {
-    throw new Error(`YouTube videos API failed: ${vidsRes.status}`);
-  }
+  if (!vidsRes.ok) throw new Error(`YouTube videos API failed: ${vidsRes.status}`);
+
   const vidsData = await vidsRes.json();
 
   const durationById = new Map();
   for (const item of vidsData.items || []) {
-    const id = item.id;
-    const iso = item.contentDetails?.duration || "";
-    durationById.set(id, isoDurationToSeconds(iso));
+    durationById.set(item.id, isoDurationToSeconds(item.contentDetails?.duration || ""));
   }
 
-  // Filter out Shorts
   const filtered = candidates.filter(v => {
     const secs = durationById.get(v.videoId);
-
-    // If we couldn't determine duration, keep it (better to show than hide)
-    if (typeof secs !== "number" || Number.isNaN(secs)) return true;
-
-    // Primary rule: Shorts are typically <= 60s
-    if (secs <= 60) return false;
-
-    // Extra safety: filter hashtagged shorts
-    if (/#shorts/i.test(v.title)) return false;
-
+    if (typeof secs !== "number" || Number.isNaN(secs)) return true; // keep unknowns
+    if (secs <= 60) return false; // Shorts rule
+    if (/#shorts/i.test(v.title)) return false; // extra safety
     return true;
   });
 
@@ -84,7 +70,9 @@ function renderPage(videos) {
   const items = videos
     .map(v => `
       <button class="gallery-item" type="button" data-video-id="${v.videoId}" data-title="${escapeHtml(v.title)}">
-        <img src="${v.thumb}" alt="${escapeHtml(v.title)}">
+        <div class="thumb">
+          <img src="${v.thumb}" alt="${escapeHtml(v.title)}" loading="lazy">
+        </div>
         <p>${escapeHtml(v.title)}</p>
       </button>
     `)
@@ -125,7 +113,23 @@ function renderPage(videos) {
   }
 
   .gallery-item:hover { transform: translateY(-3px); background:#ccc; }
-  .gallery-item img { width:100%; display:block; }
+
+  /* ---- Fix thumbnail inconsistency: force 16:9 and crop with object-fit ---- */
+  .thumb {
+    position: relative;
+    width: 100%;
+    padding-top: 56.25%; /* 16:9 */
+    background: #2d3b44; /* subtle fallback behind images */
+  }
+  .thumb img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;   /* fill the box, crop if needed */
+    display: block;
+  }
+
   .gallery-item p { margin:0; padding:10px; color:white; }
   .gallery-item:hover p { color:#333; }
 
@@ -158,7 +162,7 @@ function renderPage(videos) {
     justify-content: space-between;
     gap: 12px;
     padding: 10px 12px;
-    background: #59798E; /* requested */
+    background: #59798E;
     color: #fff;
   }
 
@@ -170,19 +174,13 @@ function renderPage(videos) {
     flex: 1;
   }
 
-  .modal-actions {
-    display:flex;
-    gap: 8px;
-    align-items:center;
-  }
-
   .btn {
     appearance: none;
     border: 0;
     border-radius: 10px;
     padding: 8px 12px;
-    background: #fff;        /* requested */
-    color: #59798E;          /* requested */
+    background: #fff;
+    color: #59798E;
     cursor: pointer;
     font-size: 13px;
     font-weight: 700;
@@ -215,9 +213,7 @@ function renderPage(videos) {
     <div class="modal-card" role="dialog" aria-modal="true" aria-label="Video player">
       <div class="modal-header">
         <p class="modal-title" id="modalTitle">Playing…</p>
-        <div class="modal-actions">
-          <button class="btn" id="closeBtn" type="button">Close</button>
-        </div>
+        <button class="btn" id="closeBtn" type="button">Close</button>
       </div>
       <div class="player-wrap">
         <iframe
@@ -237,10 +233,12 @@ function renderPage(videos) {
   const closeBtn = document.getElementById("closeBtn");
 
   function openVideo(videoId, title) {
-    // Autoplay is far more reliable when muted; user can unmute after it starts.
+    // Try to encourage higher initial quality:
+    // - vq=hd1080 is a hint (YouTube may still adapt)
+    // - autoplay is more reliable muted
     const embed =
       "https://www.youtube-nocookie.com/embed/" + videoId +
-      "?autoplay=1&mute=1&rel=0";
+      "?autoplay=1&mute=1&rel=0&playsinline=1&vq=hd1080";
 
     player.src = embed;
     modalTitle.textContent = title || "Playing…";
@@ -252,22 +250,19 @@ function renderPage(videos) {
   function closeModal() {
     modal.classList.remove("open");
     modal.setAttribute("aria-hidden", "true");
-    player.src = ""; // stop playback
+    player.src = "";
   }
 
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".gallery-item[data-video-id]");
     if (!btn) return;
-
-    const videoId = btn.getAttribute("data-video-id");
-    const title = btn.getAttribute("data-title") || "Video";
-    openVideo(videoId, title);
+    openVideo(btn.getAttribute("data-video-id"), btn.getAttribute("data-title") || "Video");
   });
 
   closeBtn.addEventListener("click", closeModal);
 
   modal.addEventListener("click", (e) => {
-    if (e.target === modal) closeModal(); // click outside closes
+    if (e.target === modal) closeModal();
   });
 
   document.addEventListener("keydown", (e) => {
@@ -284,18 +279,13 @@ function writeHtml(html) {
   fs.writeFileSync("public/index.html", html);
 }
 
-// ISO 8601 duration (PT#H#M#S) -> seconds
 function isoDurationToSeconds(iso) {
-  // Examples: PT58S, PT1M2S, PT1H3M10S
   if (!iso || typeof iso !== "string") return NaN;
-
-  const match = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  const match = iso.match(/^PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?$/);
   if (!match) return NaN;
-
   const hours = parseInt(match[1] || "0", 10);
   const mins = parseInt(match[2] || "0", 10);
   const secs = parseInt(match[3] || "0", 10);
-
   return hours * 3600 + mins * 60 + secs;
 }
 
