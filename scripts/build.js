@@ -5,10 +5,9 @@ const CHANNEL_ID = "UCLh7D6zXWhTrE_ELl0k55bQ";
 
 if (!API_KEY) throw new Error("YT_API_KEY is missing");
 
-const DESIRED_COUNT = 24; // 16 + 8 more
-const SEARCH_MAX = 50;    // YouTube API maxResults limit for search
+const DESIRED_COUNT = 24; // 16 + 8
+const SEARCH_MAX = 50;    // max for search
 
-// 1) Search latest uploads (videos only)
 function searchUrl() {
   return (
     `https://youtube.googleapis.com/youtube/v3/search` +
@@ -17,7 +16,6 @@ function searchUrl() {
   );
 }
 
-// 2) Get durations for Shorts filtering
 function videosUrl(ids) {
   const idParam = encodeURIComponent(ids.join(","));
   return (
@@ -36,8 +34,7 @@ async function build() {
     .filter(v => v.id && v.id.videoId)
     .map(v => ({
       videoId: v.id.videoId,
-      title: v.snippet?.title || "Video",
-      // prefer high to reduce “odd sizing” effects
+      title: decodeHtmlEntities(v.snippet?.title || "Video"),
       thumb:
         v.snippet?.thumbnails?.high?.url ||
         v.snippet?.thumbnails?.medium?.url ||
@@ -50,7 +47,7 @@ async function build() {
     return;
   }
 
-  // Fetch durations (seconds) for all candidate IDs
+  // Fetch durations
   const ids = candidates.map(v => v.videoId);
   const vidsRes = await fetch(videosUrl(ids));
   if (!vidsRes.ok) throw new Error(`YouTube videos API failed: ${vidsRes.status}`);
@@ -62,19 +59,17 @@ async function build() {
     secondsById.set(item.id, isoDurationToSeconds(item.contentDetails?.duration || ""));
   }
 
-  // Strict filter: remove Shorts (<= 60s) and anything hashtagged #shorts
-  // Also: if we *can't* determine duration, drop it (prevents Shorts slipping back in)
+  // Filter Shorts:
+  // - Always remove #shorts titles
+  // - Remove duration <= 60s when we can compute duration
+  // - If duration is missing/unknown, KEEP it (prevents empty galleries)
   const filtered = candidates.filter(v => {
     if (/#shorts/i.test(v.title)) return false;
-
     const secs = secondsById.get(v.videoId);
-    if (typeof secs !== "number" || Number.isNaN(secs)) return false; // strict
-    if (secs <= 60) return false;
-
+    if (typeof secs === "number" && !Number.isNaN(secs) && secs <= 60) return false;
     return true;
   });
 
-  // Take the newest 24 after filtering
   writeHtml(renderPage(filtered.slice(0, DESIRED_COUNT)));
 }
 
@@ -128,7 +123,6 @@ function renderPage(videos) {
 
   .gallery-item:hover { transform: translateY(-3px); background:#ccc; }
 
-  /* Consistent thumbnail area (fixes “random top gaps”) */
   .thumb {
     position: relative;
     width: 100%;
@@ -140,7 +134,7 @@ function renderPage(videos) {
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: cover; /* fills the box; crops if needed */
+    object-fit: cover;
     display: block;
   }
 
@@ -149,7 +143,6 @@ function renderPage(videos) {
 
   .empty { padding: 24px; text-align:center; color:#333; }
 
-  /* Modal */
   .modal {
     position: fixed;
     inset: 0;
@@ -289,14 +282,26 @@ function writeHtml(html) {
   fs.writeFileSync("public/index.html", html);
 }
 
+// ✅ Correct regex: use \d (digits), not \\d
 function isoDurationToSeconds(iso) {
   if (!iso || typeof iso !== "string") return NaN;
-  const match = iso.match(/^PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?$/);
+  const match = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
   if (!match) return NaN;
   const hours = parseInt(match[1] || "0", 10);
   const mins = parseInt(match[2] || "0", 10);
   const secs = parseInt(match[3] || "0", 10);
   return hours * 3600 + mins * 60 + secs;
+}
+
+function decodeHtmlEntities(str) {
+  return String(str)
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#34;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&#39;", "'")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">");
 }
 
 function escapeHtml(str) {
