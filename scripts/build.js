@@ -1,8 +1,11 @@
-import fs from "fs";
-import fetch from "node-fetch";
+const fs = require("fs");
 
 const API_KEY = process.env.YT_API_KEY;
 const CHANNEL_ID = "UCLh7D6zXWhTrE_ELl0k55bQ";
+
+if (!API_KEY) {
+  throw new Error("YT_API_KEY is missing");
+}
 
 const API_URL =
   `https://youtube.googleapis.com/youtube/v3/search` +
@@ -11,7 +14,9 @@ const API_URL =
 
 async function build() {
   const res = await fetch(API_URL);
-  if (!res.ok) throw new Error("YouTube API failed");
+  if (!res.ok) {
+    throw new Error(`YouTube API failed: ${res.status}`);
+  }
 
   const data = await res.json();
 
@@ -19,7 +24,7 @@ async function build() {
     .filter(v => v.id.videoId)
     .map(v => `
       <div class="gallery-item">
-        <a href="https://www.youtube.com/watch?v=${v.id.videoId}" target="_blank">
+        <a href="https://www.youtube.com/watch?v=${v.id.videoId}" target="_blank" rel="noopener">
           <img src="${v.snippet.thumbnails.medium.url}" alt="${v.snippet.title}">
           <p>${v.snippet.title}</p>
         </a>
