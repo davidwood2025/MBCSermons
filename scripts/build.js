@@ -5,13 +5,19 @@ const CHANNEL_ID = "UCLh7D6zXWhTrE_ELl0k55bQ";
 
 if (!API_KEY) throw new Error("YT_API_KEY is missing");
 
-// 1) Search (latest uploads) — force videos only
-const SEARCH_URL =
-  `https://youtube.googleapis.com/youtube/v3/search` +
-  `?part=snippet&channelId=${CHANNEL_ID}` +
-  `&maxResults=16&order=date&type=video&key=${API_KEY}`;
+const DESIRED_COUNT = 24; // 16 + 8 more
+const SEARCH_MAX = 50;    // YouTube API maxResults limit for search
 
-// 2) Videos endpoint (to get durations) — used to filter Shorts reliably
+// 1) Search latest uploads (videos only)
+function searchUrl() {
+  return (
+    `https://youtube.googleapis.com/youtube/v3/search` +
+    `?part=snippet&channelId=${CHANNEL_ID}` +
+    `&maxResults=${SEARCH_MAX}&order=date&type=video&key=${API_KEY}`
+  );
+}
+
+// 2) Get durations for Shorts filtering
 function videosUrl(ids) {
   const idParam = encodeURIComponent(ids.join(","));
   return (
@@ -21,7 +27,7 @@ function videosUrl(ids) {
 }
 
 async function build() {
-  const searchRes = await fetch(SEARCH_URL);
+  const searchRes = await fetch(searchUrl());
   if (!searchRes.ok) throw new Error(`YouTube search API failed: ${searchRes.status}`);
 
   const searchData = await searchRes.json();
@@ -31,10 +37,11 @@ async function build() {
     .map(v => ({
       videoId: v.id.videoId,
       title: v.snippet?.title || "Video",
-      // Prefer high for nicer crops; fallback to medium
+      // prefer high to reduce “odd sizing” effects
       thumb:
         v.snippet?.thumbnails?.high?.url ||
         v.snippet?.thumbnails?.medium?.url ||
+        v.snippet?.thumbnails?.default?.url ||
         "",
     }));
 
@@ -43,33 +50,40 @@ async function build() {
     return;
   }
 
-  // Fetch durations for Shorts filtering (<= 60 seconds)
+  // Fetch durations (seconds) for all candidate IDs
   const ids = candidates.map(v => v.videoId);
   const vidsRes = await fetch(videosUrl(ids));
   if (!vidsRes.ok) throw new Error(`YouTube videos API failed: ${vidsRes.status}`);
 
   const vidsData = await vidsRes.json();
 
-  const durationById = new Map();
+  const secondsById = new Map();
   for (const item of vidsData.items || []) {
-    durationById.set(item.id, isoDurationToSeconds(item.contentDetails?.duration || ""));
+    secondsById.set(item.id, isoDurationToSeconds(item.contentDetails?.duration || ""));
   }
 
+  // Strict filter: remove Shorts (<= 60s) and anything hashtagged #shorts
+  // Also: if we *can't* determine duration, drop it (prevents Shorts slipping back in)
   const filtered = candidates.filter(v => {
-    const secs = durationById.get(v.videoId);
-    if (typeof secs !== "number" || Number.isNaN(secs)) return true; // keep unknowns
-    if (secs <= 60) return false; // Shorts rule
-    if (/#shorts/i.test(v.title)) return false; // extra safety
+    if (/#shorts/i.test(v.title)) return false;
+
+    const secs = secondsById.get(v.videoId);
+    if (typeof secs !== "number" || Number.isNaN(secs)) return false; // strict
+    if (secs <= 60) return false;
+
     return true;
   });
 
-  writeHtml(renderPage(filtered));
+  // Take the newest 24 after filtering
+  writeHtml(renderPage(filtered.slice(0, DESIRED_COUNT)));
 }
 
 function renderPage(videos) {
   const items = videos
     .map(v => `
-      <button class="gallery-item" type="button" data-video-id="${v.videoId}" data-title="${escapeHtml(v.title)}">
+      <button class="gallery-item" type="button"
+        data-video-id="${v.videoId}"
+        data-title="${escapeHtml(v.title)}">
         <div class="thumb">
           <img src="${v.thumb}" alt="${escapeHtml(v.title)}" loading="lazy">
         </div>
@@ -114,19 +128,19 @@ function renderPage(videos) {
 
   .gallery-item:hover { transform: translateY(-3px); background:#ccc; }
 
-  /* ---- Fix thumbnail inconsistency: force 16:9 and crop with object-fit ---- */
+  /* Consistent thumbnail area (fixes “random top gaps”) */
   .thumb {
     position: relative;
     width: 100%;
     padding-top: 56.25%; /* 16:9 */
-    background: #2d3b44; /* subtle fallback behind images */
+    background: #2d3b44;
   }
   .thumb img {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: cover;   /* fill the box, crop if needed */
+    object-fit: cover; /* fills the box; crops if needed */
     display: block;
   }
 
@@ -190,7 +204,7 @@ function renderPage(videos) {
   .player-wrap {
     position: relative;
     width: 100%;
-    padding-top: 56.25%; /* 16:9 */
+    padding-top: 56.25%;
     background: #000;
   }
 
@@ -233,16 +247,12 @@ function renderPage(videos) {
   const closeBtn = document.getElementById("closeBtn");
 
   function openVideo(videoId, title) {
-    // Try to encourage higher initial quality:
-    // - vq=hd1080 is a hint (YouTube may still adapt)
-    // - autoplay is more reliable muted
     const embed =
       "https://www.youtube-nocookie.com/embed/" + videoId +
       "?autoplay=1&mute=1&rel=0&playsinline=1&vq=hd1080";
 
     player.src = embed;
     modalTitle.textContent = title || "Playing…";
-
     modal.classList.add("open");
     modal.setAttribute("aria-hidden", "false");
   }
