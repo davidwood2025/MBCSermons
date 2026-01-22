@@ -5,33 +5,98 @@ const CHANNEL_ID = "UCLh7D6zXWhTrE_ELl0k55bQ";
 
 if (!API_KEY) throw new Error("YT_API_KEY is missing");
 
-const API_URL =
+// 1) Search (latest uploads) — force videos only
+const SEARCH_URL =
   `https://youtube.googleapis.com/youtube/v3/search` +
   `?part=snippet&channelId=${CHANNEL_ID}` +
-  `&maxResults=16&order=date&key=${API_KEY}`;
+  `&maxResults=16&order=date&type=video&key=${API_KEY}`;
+
+// 2) Videos endpoint (to get durations) — used to filter Shorts reliably
+function videosUrl(ids) {
+  const idParam = encodeURIComponent(ids.join(","));
+  return (
+    `https://youtube.googleapis.com/youtube/v3/videos` +
+    `?part=contentDetails&id=${idParam}&key=${API_KEY}`
+  );
+}
 
 async function build() {
-  const res = await fetch(API_URL);
-  if (!res.ok) throw new Error(`YouTube API failed: ${res.status}`);
+  const searchRes = await fetch(SEARCH_URL);
+  if (!searchRes.ok) {
+    throw new Error(`YouTube search API failed: ${searchRes.status}`);
+  }
 
-  const data = await res.json();
+  const searchData = await searchRes.json();
 
-  const items = data.items
+  // Extract candidate video IDs (search sometimes returns items without videoId)
+  const candidates = (searchData.items || [])
     .filter(v => v.id && v.id.videoId)
-    .map(v => {
-      const videoId = v.id.videoId;
-      const title = v.snippet?.title || "Video";
-      const thumb = v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.high?.url || "";
-      return `
-        <button class="gallery-item" type="button" data-video-id="${videoId}" data-title="${escapeHtml(title)}">
-          <img src="${thumb}" alt="${escapeHtml(title)}">
-          <p>${escapeHtml(title)}</p>
-        </button>
-      `;
-    })
+    .map(v => ({
+      videoId: v.id.videoId,
+      title: v.snippet?.title || "Video",
+      thumb:
+        v.snippet?.thumbnails?.medium?.url ||
+        v.snippet?.thumbnails?.high?.url ||
+        "",
+    }));
+
+  if (candidates.length === 0) {
+    // Still generate a page, but with a friendly message
+    writeHtml(renderPage([]));
+    return;
+  }
+
+  // Fetch durations for filtering Shorts (<= 60 seconds)
+  const ids = candidates.map(v => v.videoId);
+  const vidsRes = await fetch(videosUrl(ids));
+  if (!vidsRes.ok) {
+    throw new Error(`YouTube videos API failed: ${vidsRes.status}`);
+  }
+  const vidsData = await vidsRes.json();
+
+  const durationById = new Map();
+  for (const item of vidsData.items || []) {
+    const id = item.id;
+    const iso = item.contentDetails?.duration || "";
+    durationById.set(id, isoDurationToSeconds(iso));
+  }
+
+  // Filter out Shorts
+  const filtered = candidates.filter(v => {
+    const secs = durationById.get(v.videoId);
+
+    // If we couldn't determine duration, keep it (better to show than hide)
+    if (typeof secs !== "number" || Number.isNaN(secs)) return true;
+
+    // Primary rule: Shorts are typically <= 60s
+    if (secs <= 60) return false;
+
+    // Extra safety: filter hashtagged shorts
+    if (/#shorts/i.test(v.title)) return false;
+
+    return true;
+  });
+
+  writeHtml(renderPage(filtered));
+}
+
+function renderPage(videos) {
+  const items = videos
+    .map(v => `
+      <button class="gallery-item" type="button" data-video-id="${v.videoId}" data-title="${escapeHtml(v.title)}">
+        <img src="${v.thumb}" alt="${escapeHtml(v.title)}">
+        <p>${escapeHtml(v.title)}</p>
+      </button>
+    `)
     .join("");
 
-  const html = `<!DOCTYPE html>
+  const emptyState = `
+    <div class="empty">
+      <p>No videos found.</p>
+    </div>
+  `;
+
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -39,12 +104,14 @@ async function build() {
 <title>Sermon Recordings</title>
 <style>
   body { margin:0; font-family:Arial, sans-serif; background:#f4f4f4; }
+
   .gallery {
     display:grid;
     grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
     gap:20px;
     padding:20px;
   }
+
   .gallery-item {
     background:#59798E;
     border-radius:8px;
@@ -56,10 +123,13 @@ async function build() {
     cursor:pointer;
     text-align:left;
   }
+
   .gallery-item:hover { transform: translateY(-3px); background:#ccc; }
   .gallery-item img { width:100%; display:block; }
   .gallery-item p { margin:0; padding:10px; color:white; }
   .gallery-item:hover p { color:#333; }
+
+  .empty { padding: 24px; text-align:center; color:#333; }
 
   /* Modal */
   .modal {
@@ -73,6 +143,7 @@ async function build() {
     z-index: 9999;
   }
   .modal.open { display: flex; }
+
   .modal-card {
     width: min(980px, 100%);
     background: #111;
@@ -80,15 +151,17 @@ async function build() {
     overflow: hidden;
     box-shadow: 0 12px 40px rgba(0,0,0,0.35);
   }
+
   .modal-header {
     display:flex;
     align-items:center;
     justify-content: space-between;
     gap: 12px;
     padding: 10px 12px;
-    background: #0b0b0b;
+    background: #59798E; /* requested */
     color: #fff;
   }
+
   .modal-title {
     font-size: 14px;
     line-height: 1.3;
@@ -96,26 +169,25 @@ async function build() {
     padding: 0;
     flex: 1;
   }
+
   .modal-actions {
     display:flex;
     gap: 8px;
     align-items:center;
   }
+
   .btn {
     appearance: none;
     border: 0;
     border-radius: 10px;
-    padding: 8px 10px;
-    background: #2b2b2b;
-    color: #fff;
+    padding: 8px 12px;
+    background: #fff;        /* requested */
+    color: #59798E;          /* requested */
     cursor: pointer;
     font-size: 13px;
-    text-decoration: none;
-    display:inline-flex;
-    align-items:center;
-    gap: 6px;
+    font-weight: 700;
   }
-  .btn:hover { background: #3a3a3a; }
+  .btn:hover { background: #f1f1f1; }
 
   .player-wrap {
     position: relative;
@@ -123,6 +195,7 @@ async function build() {
     padding-top: 56.25%; /* 16:9 */
     background: #000;
   }
+
   .player-wrap iframe {
     position:absolute;
     inset:0;
@@ -135,7 +208,7 @@ async function build() {
 <body>
 
   <div class="gallery">
-    ${items}
+    ${videos.length ? items : emptyState}
   </div>
 
   <div class="modal" id="modal" aria-hidden="true">
@@ -143,7 +216,6 @@ async function build() {
       <div class="modal-header">
         <p class="modal-title" id="modalTitle">Playing…</p>
         <div class="modal-actions">
-          <a class="btn" id="openNewTab" href="#" target="_blank" rel="noopener">Open in new tab</a>
           <button class="btn" id="closeBtn" type="button">Close</button>
         </div>
       </div>
@@ -163,19 +235,15 @@ async function build() {
   const player = document.getElementById("player");
   const modalTitle = document.getElementById("modalTitle");
   const closeBtn = document.getElementById("closeBtn");
-  const openNewTab = document.getElementById("openNewTab");
 
   function openVideo(videoId, title) {
-    // Autoplay is far more reliable when muted.
-    // User can unmute once it starts.
-    const embed = "https://www.youtube-nocookie.com/embed/" + videoId +
+    // Autoplay is far more reliable when muted; user can unmute after it starts.
+    const embed =
+      "https://www.youtube-nocookie.com/embed/" + videoId +
       "?autoplay=1&mute=1&rel=0";
 
     player.src = embed;
     modalTitle.textContent = title || "Playing…";
-
-    // New tab option (may still be blocked by GoDaddy in some cases, but often works)
-    openNewTab.href = "https://www.youtube.com/watch?v=" + videoId;
 
     modal.classList.add("open");
     modal.setAttribute("aria-hidden", "false");
@@ -184,13 +252,13 @@ async function build() {
   function closeModal() {
     modal.classList.remove("open");
     modal.setAttribute("aria-hidden", "true");
-    // Stop playback
-    player.src = "";
+    player.src = ""; // stop playback
   }
 
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".gallery-item[data-video-id]");
     if (!btn) return;
+
     const videoId = btn.getAttribute("data-video-id");
     const title = btn.getAttribute("data-title") || "Video";
     openVideo(videoId, title);
@@ -199,8 +267,7 @@ async function build() {
   closeBtn.addEventListener("click", closeModal);
 
   modal.addEventListener("click", (e) => {
-    // click outside the card closes
-    if (e.target === modal) closeModal();
+    if (e.target === modal) closeModal(); // click outside closes
   });
 
   document.addEventListener("keydown", (e) => {
@@ -210,9 +277,26 @@ async function build() {
 
 </body>
 </html>`;
+}
 
+function writeHtml(html) {
   fs.mkdirSync("public", { recursive: true });
   fs.writeFileSync("public/index.html", html);
+}
+
+// ISO 8601 duration (PT#H#M#S) -> seconds
+function isoDurationToSeconds(iso) {
+  // Examples: PT58S, PT1M2S, PT1H3M10S
+  if (!iso || typeof iso !== "string") return NaN;
+
+  const match = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!match) return NaN;
+
+  const hours = parseInt(match[1] || "0", 10);
+  const mins = parseInt(match[2] || "0", 10);
+  const secs = parseInt(match[3] || "0", 10);
+
+  return hours * 3600 + mins * 60 + secs;
 }
 
 function escapeHtml(str) {
