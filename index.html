@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sermon Recordings</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f4f4f4;
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 20px;
+      padding: 20px;
+    }
+
+    .gallery-item {
+      background-color: #59798E;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      transition: transform 0.3s ease, background-color 0.3s ease;
+    }
+
+    .gallery-item:hover {
+      transform: translateY(-5px);
+      background-color: #ccc;
+    }
+
+    .gallery-item img {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .gallery-item a {
+      display: block;
+      text-align: center;
+      padding: 10px;
+      text-decoration: none;
+      background-color: transparent;
+      color: white; /* This sets the text color for links by default */
+      transition: color 0.3s ease;
+    }
+
+    .gallery-item a p {
+      margin: 0;
+      padding-top: 10px;
+      color: inherit; /* Inherit from the <a> tag */
+    }
+
+    .gallery-item:hover a {
+      color: #333; /* On hover, the text inside the link becomes charcoal grey */
+    }
+
+    .error-message {
+      text-align: center;
+      color: red;
+      padding: 20px;
+    }
+
+    @media (max-width: 600px) {
+      .gallery {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Gallery container -->
+  <div class="gallery" id="gallery"></div>
+  
+  <!-- Error message container -->
+  <div class="error-message" id="error-message" style="display: none;"></div>
+
+  <script>
+    const apiUrl = 'https://youtube.googleapis.com/youtube/v3/search';
+    const channelId = 'UCLh7D6zXWhTrE_ELl0k55bQ';
+    const apiKey = 'AIzaSyA-avMKVaN27PQKWlTk4IReauAONToQJNY';
+
+    async function fetchVideos() {
+      try {
+        const response = await fetch(`${apiUrl}?part=snippet&channelId=${channelId}&maxResults=16&order=date&key=${apiKey}`);
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch data from YouTube API');
+        }
+
+        const data = await response.json();
+        if (data.items.length === 0) {
+          showErrorMessage('No videos found.');
+          return;
+        }
+
+        displayVideos(data.items);
+      } catch (error) {
+        showErrorMessage(error.message);
+        console.error('Error fetching videos:', error);
+      }
+    }
+
+    function displayVideos(videos) {
+      const gallery = document.getElementById('gallery');
+      gallery.innerHTML = '';
+
+      videos.forEach(video => {
+        const videoId = video.id.videoId;
+        const videoTitle = video.snippet.title;
+        const videoThumbnail = video.snippet.thumbnails.medium.url;
+
+        const galleryItem = document.createElement('div');
+        galleryItem.classList.add('gallery-item');
+
+        galleryItem.innerHTML = `
+          <a href="https://www.youtube.com/watch?v=${videoId}" target="_blank" rel="noopener noreferrer">
+            <img src="${videoThumbnail}" alt="${videoTitle}">
+            <p>${videoTitle}</p>
+          </a>
+        `;
+        
+        gallery.appendChild(galleryItem);
+      });
+    }
+
+    function showErrorMessage(message) {
+      const errorMessage = document.getElementById('error-message');
+      errorMessage.textContent = message;
+      errorMessage.style.display = 'block';
+    }
+
+    window.addEventListener('load', fetchVideos);
+  </script>
+
+</body>
+</html>
